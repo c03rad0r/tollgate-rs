@@ -35,3 +35,15 @@ __pycache__/
 skills
 memory-global
 memory-project/
+
+# auto-generated opencode session handover (do not commit)
+HANDOVER.md
+
+# --- Android ---
+android/.gradle/
+android/local.properties
+android/app/build/
+android/app/src/main/jniLibs/*/libtollgate_android.so
+android/captures/
+*.apk
+*.aab

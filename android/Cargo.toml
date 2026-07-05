@@ -1,0 +1,40 @@
+[package]
+name = "tollgate-android"
+version = { workspace = true }
+edition = "2021"
+description = "TollGate native Android core: Nostr + Cashu NIP-60 wallet, exposed to Kotlin/Jetpack Compose via UniFFI"
+license = { workspace = true }
+publish = false
+
+[lib]
+name = "tollgate_android"
+crate-type = ["cdylib", "staticlib", "lib"]
+
+[dependencies]
+# FFI layer (proc-macro mode: no .udl, no build.rs scaffolding).
+uniffi = { version = "0.32", features = ["cli"] }
+
+# Reuse the existing TollGate stack (shared workspace lockfile, no version drift).
+tollgate-core = { workspace = true }
+cashu = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+thiserror = "2"
+
+# New: native Nostr (rust-nostr). "nostril-native" in the roadmap == native Rust
+# Nostr rather than JS/NDK. Used for identity (npub/nsec), relay transport, and
+# NIP-60 Cashu-wallet-over-Nostr sync. all-nips pulls nip19/nip44/nip57 etc.
+nostr-sdk = { version = "0.40", default-features = false, features = ["all-nips"] }
+
+# NOTE: deliberately NOT setting `[lints] workspace = true` — UniFFI's proc-macro
+# scaffolding expands to `unsafe extern "C"` FFI shims, which would trip the
+# workspace `unsafe_code = "deny"` lint that tollgate-core/net opt into.
+
+# Regenerate Kotlin/Python bindings:
+#   cargo run --bin uniffi-bindgen -- generate --library target/aarch64-linux-android/debug/libtollgate_android.so --language kotlin --out-dir android/kotlin
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
