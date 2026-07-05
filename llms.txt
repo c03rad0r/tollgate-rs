@@ -1,0 +1,26 @@
+# tollgate-rs
+
+> protocol — autonomous, device-to-device payment for metered resource
+
+Project orientation for LLMs (see https://llmstxt.org/). Cross-link: AGENTS.md (workflow rules), HANDOVER.md (session state).
+
+## Stack
+
+Languages/build: Rust.
+
+## Structure (top file types)
+
+- `.rs`: 25 files
+- `.svg`: 19 files
+- `.md`: 16 files
+- `.yaml`: 14 files
+- `.yml`: 8 files
+- `.sh`: 8 files
+
+## Build & test
+
+- Inspect `Makefile` / `package.json` / `Cargo.toml` / `platformio.ini` for the canonical commands.
+
+## Optional
+
+- [README](./README.md): human readme
