@@ -27,7 +27,10 @@ pub struct MerchantWalletAdapter {
 
 impl MerchantWalletAdapter {
     pub fn new(merchant: Arc<MerchantProvider>, mint_urls: Vec<String>) -> Self {
-        Self { merchant, mint_urls }
+        Self {
+            merchant,
+            mint_urls,
+        }
     }
 }
 
@@ -151,10 +154,7 @@ mod tests {
     fn make_adapter(balance: u64, mints: &[&str]) -> MerchantWalletAdapter {
         let wallet: Arc<dyn Wallet> = Arc::new(MockWallet::new(balance));
         let merchant = Arc::new(MerchantProvider::new(wallet));
-        MerchantWalletAdapter::new(
-            merchant,
-            mints.iter().map(|s| s.to_string()).collect(),
-        )
+        MerchantWalletAdapter::new(merchant, mints.iter().map(|s| s.to_string()).collect())
     }
 
     #[tokio::test]

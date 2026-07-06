@@ -365,8 +365,7 @@ async fn main() {
             let valve: Arc<dyn Valve + Send + Sync> = match valve.as_str() {
                 "noop" => {
                     tracing::info!("Using noop valve (RADIUS deployment, enforcement via Session-Timeout + CoA)");
-                    Arc::new(v1::server::NoopValve)
-                        as Arc<dyn Valve + Send + Sync>
+                    Arc::new(v1::server::NoopValve) as Arc<dyn Valve + Send + Sync>
                 }
                 "nds" => {
                     #[cfg(feature = "nds")]

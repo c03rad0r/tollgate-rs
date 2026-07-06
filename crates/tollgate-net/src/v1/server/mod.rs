@@ -237,13 +237,10 @@ impl V1Server {
                 .iter()
                 .map(|m| m.url.clone())
                 .collect();
-            let adapter: Arc<dyn crate::v1::cli::commands::CliWallet> =
-                Arc::new(crate::v1::cli::MerchantWalletAdapter::new(
-                    merchant.clone(),
-                    mint_urls,
-                ));
-            let mut server =
-                crate::v1::cli::CliServer::new(adapter, Some(path.clone()));
+            let adapter: Arc<dyn crate::v1::cli::commands::CliWallet> = Arc::new(
+                crate::v1::cli::MerchantWalletAdapter::new(merchant.clone(), mint_urls),
+            );
+            let mut server = crate::v1::cli::CliServer::new(adapter, Some(path.clone()));
             if let Some(cfg_path) = cli_config_path {
                 let cfg: Arc<dyn crate::v1::cli::commands::CliConfig> = Arc::new(
                     crate::v1::cli::FileConfig::new(std::path::PathBuf::from(cfg_path)),

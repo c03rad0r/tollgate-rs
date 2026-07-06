@@ -182,7 +182,6 @@ pub fn handle_upstream_connect_streaming<F>(
 where
     F: FnMut(&str, &str), // (step, message)
 {
-
     // Step 1: Enable radios
     send_progress("[1/7]", "Enabling radios...");
 

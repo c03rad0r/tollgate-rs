@@ -177,8 +177,8 @@ fn message_name(msg: &Message) -> &'static str {
 #[cfg(feature = "spilman")]
 use {
     crate::spilman_service::{
-        verify_settlement_proofs_dleq, Payment, PaymentProof, SpilmanAsyncNetworking, SpilmanBridge,
-        SpilmanHost,
+        verify_settlement_proofs_dleq, Payment, PaymentProof, SpilmanAsyncNetworking,
+        SpilmanBridge, SpilmanHost,
     },
     async_trait::async_trait,
     cashu::nuts::{CurrencyUnit, Id, Proof as CashuProof, PublicKey, SecretKey},
@@ -487,9 +487,7 @@ where
             // A bad/missing DLEQ proof means the mint may not have actually signed
             // these proofs — reject rather than emit a CloseAck.
             if let Err(dleq_err) = verify_close_settlement_dleq(bridge.host(), mint_url, &result) {
-                tracing::warn!(
-                    "[spilman] Cooperative close DLEQ verification failed: {dleq_err}"
-                );
+                tracing::warn!("[spilman] Cooperative close DLEQ verification failed: {dleq_err}");
                 return Message::Reject(Reject {
                     msg_type: MessageType::Reject as u8,
                     rejected_type: MessageType::ChannelClose as u8,
@@ -994,9 +992,11 @@ async fn handle_force_close(
     {
         Ok(result) => {
             // Phase 0: verify DLEQ on settlement outputs before reporting closed.
-            if let Err(dleq_err) =
-                verify_close_settlement_dleq(spilman_state.bridge.host(), &spilman_state.mint_url, &result)
-            {
+            if let Err(dleq_err) = verify_close_settlement_dleq(
+                spilman_state.bridge.host(),
+                &spilman_state.mint_url,
+                &result,
+            ) {
                 spilman_state
                     .bridge
                     .host()

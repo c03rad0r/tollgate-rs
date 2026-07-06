@@ -61,8 +61,8 @@ async fn mint_funding_proofs(
     funding_outputs_json: &str,
     keyset_info_json: &str,
 ) -> Result<String, String> {
-    let outputs: serde_json::Value =
-        serde_json::from_str(funding_outputs_json).map_err(|e| format!("parse funding outputs: {e}"))?;
+    let outputs: serde_json::Value = serde_json::from_str(funding_outputs_json)
+        .map_err(|e| format!("parse funding outputs: {e}"))?;
     let funding_nominal = outputs["funding_token_nominal"]
         .as_u64()
         .ok_or("missing funding_token_nominal")?;
@@ -325,14 +325,10 @@ async fn spilman_channel_lifecycle() {
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .expect("reqwest client");
-    let proofs_json = mint_funding_proofs(
-        &client,
-        MINT_URL,
-        &funding_outputs_json,
-        &keyset_info_json,
-    )
-    .await
-    .expect("mint funding proofs");
+    let proofs_json =
+        mint_funding_proofs(&client, MINT_URL, &funding_outputs_json, &keyset_info_json)
+            .await
+            .expect("mint funding proofs");
     trace_event!(
         "Mint",
         "Alice",

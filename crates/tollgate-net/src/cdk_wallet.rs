@@ -293,11 +293,7 @@ impl Wallet for CdkWallet {
                 &token_str[..token_str.len().min(20)]
             );
 
-            let balance_before = self
-                .wallet
-                .total_balance()
-                .await
-                .map_or(0, u64::from);
+            let balance_before = self.wallet.total_balance().await.map_or(0, u64::from);
             let mut last_err = String::new();
             for attempt in 0..3 {
                 match self

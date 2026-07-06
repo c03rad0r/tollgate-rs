@@ -18,8 +18,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use cashu::mint_url::MintUrl;
-use cashu::nuts::{CurrencyUnit, Proof as CashuProof, SecretKey};
 use cashu::nuts::Token as CashuToken;
+use cashu::nuts::{CurrencyUnit, Proof as CashuProof, SecretKey};
 use cdk_spilman_test_mint::{build_router, build_test_mint, TestMintConfig};
 use tokio::net::TcpListener;
 
@@ -46,10 +46,7 @@ async fn start_mock_mint() -> MockMint {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind loopback mint");
-    let port = listener
-        .local_addr()
-        .expect("local_addr")
-        .port();
+    let port = listener.local_addr().expect("local_addr").port();
     let base_url = format!("http://127.0.0.1:{port}");
 
     let mut config = TestMintConfig::default();
@@ -64,7 +61,9 @@ async fn start_mock_mint() -> MockMint {
     config.default_input_fee_ppk = 0;
 
     let mint = build_test_mint(&config).await.expect("build test mint");
-    let router = build_router(Arc::new(mint)).await.expect("build mint router");
+    let router = build_router(Arc::new(mint))
+        .await
+        .expect("build mint router");
 
     let serve = tokio::spawn(async move {
         // Serve until the task is aborted (test tear-down).
@@ -88,12 +87,8 @@ async fn mint_proofs(base_url: &str, amount: u64) -> Vec<CashuProof> {
         .await
         .expect("mint tokens from mock mint");
     let proofs_json = wallet.unspent_proofs_json().await.expect("unspent proofs");
-    let proofs: Vec<CashuProof> =
-        serde_json::from_str(&proofs_json).expect("parse cashu proofs");
-    assert!(
-        !proofs.is_empty(),
-        "mock mint should have produced proofs"
-    );
+    let proofs: Vec<CashuProof> = serde_json::from_str(&proofs_json).expect("parse cashu proofs");
+    assert!(!proofs.is_empty(), "mock mint should have produced proofs");
     // Every mock-mint proof must carry a DLEQ (required for Spilman channels).
     for (i, p) in proofs.iter().enumerate() {
         assert!(p.dleq.is_some(), "proof #{i} missing DLEQ");
@@ -123,7 +118,10 @@ async fn spilman_open_channel_and_payments_against_mock_mint() {
         selected.push(p.clone());
         selected_total += u64::from(p.amount);
     }
-    assert!(selected_total >= 1000, "need >=1000 sat, got {selected_total}");
+    assert!(
+        selected_total >= 1000,
+        "need >=1000 sat, got {selected_total}"
+    );
 
     let mint_url = MintUrl::from_str(base_url).expect("parse mint url");
     let token = CashuToken::new(mint_url, selected, None, CurrencyUnit::Sat);

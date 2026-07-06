@@ -76,8 +76,7 @@ pub fn assemble_keyset_info(
     })
     .to_string();
 
-    let keyset_info =
-        parse_keyset_info_from_json(&keyset_info_json).map_err(SpilmanError::from)?;
+    let keyset_info = parse_keyset_info_from_json(&keyset_info_json).map_err(SpilmanError::from)?;
     Ok((keyset_info_json, keyset_info))
 }
 

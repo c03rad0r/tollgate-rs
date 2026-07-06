@@ -392,7 +392,10 @@ impl UbusClient {
 
         // Check for JSON-RPC level error
         if let Some(error) = rpc_response.error {
-            let code = error.get("code").and_then(serde_json::Value::as_i64).unwrap_or(-1);
+            let code = error
+                .get("code")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(-1);
             let message = error
                 .get("message")
                 .and_then(|m| m.as_str())

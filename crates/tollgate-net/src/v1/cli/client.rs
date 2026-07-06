@@ -37,8 +37,8 @@ pub fn run_cli_client(
         flags: HashMap::new(),
     };
 
-    let mut request = serde_json::to_string(&msg)
-        .map_err(|e| format!("Failed to serialize request: {e}"))?;
+    let mut request =
+        serde_json::to_string(&msg).map_err(|e| format!("Failed to serialize request: {e}"))?;
     request.push('\n');
 
     writer
@@ -163,12 +163,7 @@ mod tests {
             )
         }));
 
-        let result = run_cli_client(
-            &socket_path,
-            "wallet",
-            &["balance".to_owned()],
-            true,
-        );
+        let result = run_cli_client(&socket_path, "wallet", &["balance".to_owned()], true);
         assert!(result.is_ok());
         handle.join().unwrap();
     }
