@@ -177,13 +177,15 @@ fn message_name(msg: &Message) -> &'static str {
 #[cfg(feature = "spilman")]
 use {
     crate::spilman_service::{
-        Payment, PaymentProof, SpilmanAsyncNetworking, SpilmanBridge, SpilmanHost,
+        verify_settlement_proofs_dleq, Payment, PaymentProof, SpilmanAsyncNetworking, SpilmanBridge,
+        SpilmanHost,
     },
     async_trait::async_trait,
     cashu::nuts::{CurrencyUnit, Id, Proof as CashuProof, PublicKey, SecretKey},
     cdk_spilman::{
-        compute_channel_secret_from_hex, sign_with_tweaked_key_util, BridgeError, ChannelFunding,
-        ChannelPolicy, ChannelState, CloseError, ClosingData,
+        compute_channel_secret_from_hex, parse_keyset_info_from_json, sign_with_tweaked_key_util,
+        BridgeError, ChannelFunding, ChannelPolicy, ChannelState, CloseError, CloseSuccess,
+        ClosingData,
     },
     serde_json,
     std::collections::HashMap,
@@ -391,14 +393,56 @@ where
     }
 }
 
+/// Verify DLEQ proofs on the settlement outputs returned by a close.
+///
+/// Looks up the keyset each proof was minted under (via the host's keyset
+/// registry) and delegates to [`verify_settlement_proofs_dleq`]. An empty
+/// `sender_proofs` set is accepted (nothing for the sender to settle).
+///
+/// # Errors
+///
+/// Returns a human-readable `String` describing the first failure (parse,
+/// missing keyset, or DLEQ).
+#[cfg(feature = "spilman")]
+fn verify_close_settlement_dleq<H>(
+    host: &H,
+    mint_url: &str,
+    close: &CloseSuccess,
+) -> Result<(), String>
+where
+    H: SpilmanHost<()>,
+{
+    let proofs: Vec<CashuProof> = serde_json::from_str(&close.sender_proofs)
+        .map_err(|e| format!("parse settlement proofs: {e}"))?;
+
+    // Nothing for the sender to settle — vacuously valid.
+    if proofs.is_empty() {
+        return Ok(());
+    }
+
+    let keyset_id = proofs[0].keyset_id;
+    let keyset_json = host.get_keyset_info(mint_url, &keyset_id).ok_or_else(|| {
+        format!("keyset {keyset_id} not registered with host (cannot verify DLEQ)")
+    })?;
+    let keyset_info = parse_keyset_info_from_json(&keyset_json)
+        .map_err(|e| format!("parse keyset info for {keyset_id}: {e}"))?;
+
+    verify_settlement_proofs_dleq(&close.sender_proofs, &keyset_info).map_err(|e| e.to_string())
+}
+
 /// Process a `ChannelClose` through the Spilman bridge. Executes cooperative
 /// close settlement against the mint. Returns `CloseAck` on success, `Reject`
 /// on failure.
+///
+/// As of Phase 0 the settlement `sender_proofs` are DLEQ-verified before a
+/// `CloseAck` is emitted — a failed DLEQ proof is treated as an invalid
+/// settlement and rejected.
 #[cfg(feature = "spilman")]
 pub(crate) async fn process_channel_close<H, N>(
     bridge: &SpilmanBridge<H, ()>,
     net: &N,
     close: &ChannelClose,
+    mint_url: &str,
 ) -> Message
 where
     H: SpilmanHost<()>,
@@ -439,8 +483,22 @@ where
         .await
     {
         Ok(result) => {
+            // Phase 0: verify DLEQ on settlement outputs before trusting the close.
+            // A bad/missing DLEQ proof means the mint may not have actually signed
+            // these proofs — reject rather than emit a CloseAck.
+            if let Err(dleq_err) = verify_close_settlement_dleq(bridge.host(), mint_url, &result) {
+                tracing::warn!(
+                    "[spilman] Cooperative close DLEQ verification failed: {dleq_err}"
+                );
+                return Message::Reject(Reject {
+                    msg_type: MessageType::Reject as u8,
+                    rejected_type: MessageType::ChannelClose as u8,
+                    reason_code: ReasonCode::FundingInvalid,
+                    reason_text: Some(format!("settlement DLEQ verification failed: {dleq_err}")),
+                });
+            }
             tracing::info!(
-                "[spilman] Cooperative close settled: channel={} receiver_sum={} sender_sum={}",
+                "[spilman] Cooperative close settled (DLEQ verified): channel={} receiver_sum={} sender_sum={}",
                 &result.channel_id[..result.channel_id.len().min(16)],
                 result.receiver_sum,
                 result.sender_sum,
@@ -867,7 +925,13 @@ async fn handle_spilman_message(
             .bridge
             .host()
             .set_lifecycle(&channel_id_hex, ChannelLifecycleState::ClosingCooperative);
-        let resp = process_channel_close(&spilman_state.bridge, &spilman_state.net, close).await;
+        let resp = process_channel_close(
+            &spilman_state.bridge,
+            &spilman_state.net,
+            close,
+            &spilman_state.mint_url,
+        )
+        .await;
         if matches!(resp, Message::Reject(_)) {
             spilman_state.bridge.host().set_lifecycle(
                 &channel_id_hex,
@@ -929,8 +993,22 @@ async fn handle_force_close(
         .await
     {
         Ok(result) => {
+            // Phase 0: verify DLEQ on settlement outputs before reporting closed.
+            if let Err(dleq_err) =
+                verify_close_settlement_dleq(spilman_state.bridge.host(), &spilman_state.mint_url, &result)
+            {
+                spilman_state
+                    .bridge
+                    .host()
+                    .set_lifecycle(&channel_id, ChannelLifecycleState::SettlementFailedFinal);
+                tracing::warn!("[spilman] Unilateral close DLEQ verification failed: {dleq_err}");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("settlement DLEQ verification failed: {dleq_err}"),
+                );
+            }
             tracing::info!(
-                "[spilman] Unilateral close settled: channel={} receiver_sum={} sender_sum={}",
+                "[spilman] Unilateral close settled (DLEQ verified): channel={} receiver_sum={} sender_sum={}",
                 &channel_id[..channel_id.len().min(16)],
                 result.receiver_sum,
                 result.sender_sum,
@@ -1432,7 +1510,7 @@ mod spilman_handler_tests {
         let net = UnreachableNetworking;
 
         let close = make_close(0x99, 0, 0x00, false);
-        let msg = process_channel_close(&bridge, &net, &close).await;
+        let msg = process_channel_close(&bridge, &net, &close, "http://test-mint").await;
 
         match msg {
             Message::Reject(reject) => {
@@ -1449,7 +1527,7 @@ mod spilman_handler_tests {
         let net = UnreachableNetworking;
 
         let close = make_close(0x88, 100, 0xAA, false);
-        let msg = process_channel_close(&bridge, &net, &close).await;
+        let msg = process_channel_close(&bridge, &net, &close, "http://test-mint").await;
 
         match msg {
             Message::Reject(reject) => {
