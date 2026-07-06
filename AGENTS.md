@@ -14,34 +14,64 @@ This is the **Amperstrand experimental fork** of [OpenTollGate/tollgate-rs](http
 
 **Stable code lives on `master`.** The `experimental` branch is where AI-driven exploration happens before human review and merging.
 
-## CRITICAL: Upstream Boundary
+## CRITICAL: Fork-First Stacking Strategy
 
-**This repository is a private fork of a public open-source project. The upstream project is maintained by other people.**
+**This repository is a fork of a public open-source project.** The upstream
+project (`OpenTollGate/tollgate-rs`) is maintained by other people. We use a
+**fork-first PR stacking** strategy: all work lives on our fork, only the
+lowest PR in each stack ever targets upstream, and one at a time.
 
-### ABSOLUTE RULES
-
-1. **NEVER push to `OpenTollGate/tollgate-rs` (the upstream `origin` remote).** No direct commits, no force pushes, no branch creation, no issue comments, no PRs, nothing. The upstream remote exists for pulling upstream changes only.
-
-2. **NEVER open issues or PRs on the upstream repo.** If upstream contributions are desired, they will be carefully prepared and submitted by the project owner through a deliberate, reviewed process — not by an automated agent.
-
-3. **NEVER interact with the upstream repo's GitHub in any way** — no comments, no reactions, no issue creation, no discussions, no wiki edits. Zero. The upstream maintainers should never see activity from this fork.
-
-4. **All work happens on the `origin` remote** (`https://github.com/Amperstrand/tollgate-rs-ai-research-and-experiments.git`). Branch from `master`, push to `origin`, create PRs against `origin`.
-
-5. **When syncing from upstream**, always `git fetch upstream` and merge/rebase into local branches. Never push those merged changes back to `upstream`.
-
-### Git Remote Configuration
+### Git Remotes
 
 ```
-origin   → https://github.com/Amperstrand/tollgate-rs-ai-research-and-experiments.git (READ-WRITE, this fork)
-upstream → https://github.com/OpenTollGate/tollgate-rs                 (READ-ONLY upstream, fetch only)
+origin      → https://github.com/c03rad0r/tollgate-rs.git              (READ-WRITE, primary fork)
+amperstrand → https://github.com/Amperstrand/tollgate-rs.git           (READ-WRITE, collaborator fork)
+upstream    → https://github.com/OpenTollGate/tollgate-rs.git          (READ-ONLY, fetch only)
+ngit        → nostr://npub1.../relay.ngit.dev/tollgate-rs             (READ-WRITE, Nostr git mirror)
 ```
 
-- `git pull upstream master` — OK (sync from upstream)
-- `git push origin feature-branch` — OK (work on our fork)
+### Commit & Push Policy (MANDATORY)
+
+1. **Commit early, commit often.** Many small atomic commits, each one logical
+   change with a conventional-commit message (`feat:`, `fix:`, `test:`,
+   `docs:`, `chore:`, `refactor:`). Do NOT accumulate uncommitted work —
+   commit every 10–20 minutes. Uncommitted work is lost work.
+
+2. **Everything gets pushed.** A local commit that isn't pushed is not done.
+   Every push goes to BOTH `origin` (GitHub fork) AND `ngit` (Nostr mirror).
+   Push after each commit or small group of commits — don't let work pile up
+   locally.
+
+3. **Push to ngit on every push to GitHub.** The ngit remote is a mirror.
+   After `git push origin <branch>`, also run `git push ngit <branch>` (or
+   `--force-with-lease` for rebases). Both remotes must stay in sync.
+
+### Fork-First PR Stacking
+
+```
+upstream/master
+└── PR A (lowest — targets upstream OpenTollGate/tollgate-rs)
+    └── PR B (targets PR A's branch on c03rad0r fork — fork-only)
+        └── PR C (targets PR B's branch on c03rad0r fork — fork-only)
+```
+
+- **Each PR is one concern.** Small, independently reviewable diffs.
+- **Only the lowest PR in a stack targets upstream.** Higher PRs target the
+  previous PR's branch on the fork (`c03rad0r/tollgate-rs`). Never have
+  multiple PRs from the same stack open upstream simultaneously.
+- **When the lowest PR merges upstream**, rebase the next PR onto upstream
+  master and retarget it upstream. The stack shifts up.
+- **Do NOT open upstream PRs unless explicitly instructed.** When in doubt,
+  push to the fork and stack — the project owner decides when to go upstream.
+
+### Upstream Boundary
+
+- `git fetch upstream` — OK (sync from upstream)
+- `git push origin <branch>` — OK (work on our fork)
+- `git push ngit <branch>` — OK (mirror to Nostr)
 - `git push upstream anything` — **FORBIDDEN**
-- `gh issue create --repo OpenTollGate/tollgate-rs` — **FORBIDDEN**
-- `gh pr create --repo OpenTollGate/tollgate-rs` — **FORBIDDEN**
+- `gh pr create --repo OpenTollGate/tollgate-rs` — **only for the lowest PR
+  in a stack, and only when the project owner approves**
 
 ## Project Overview
 
@@ -221,9 +251,11 @@ M2 (bootstrap tokens only, no Spilman) gives a functional TollGate with token-ba
 
 ### Branching
 
-- Branch from `master` on the `origin` remote
-- Branch naming: `m{number}/{short-description}` (e.g., `m1/cbor-codec`, `m2/bootstrap-tokens`)
-- Push branches to `origin` only
+- Branch from the appropriate base (upstream `master` for the lowest PR in a
+  stack, or the previous PR's branch for higher PRs in the stack)
+- Branch naming: `m{number}/{short-description}` or `phase-{n}/{description}`
+- Push branches to `origin` (c03rad0r fork) AND `ngit` (Nostr mirror)
+- Each branch = one PR concern. Stack branches on the fork.
 
 ### Implementation Notes
 
