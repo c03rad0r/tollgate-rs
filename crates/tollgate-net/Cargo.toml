@@ -48,6 +48,7 @@ spilman = [
     "dep:cdk-spilman",
     "dep:cashu",
     "dep:cdk-spilman-test-mint",
+    "dep:rusqlite",
     "cdk-spilman/wallet",
     "cdk-spilman/configurable-host-reqwest",
 ]

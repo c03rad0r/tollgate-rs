@@ -9,3 +9,6 @@ pub mod spilman_service;
 
 #[cfg(feature = "spilman")]
 pub mod spilman_wallet;
+
+#[cfg(feature = "spilman")]
+pub mod spilman_persistence;
