@@ -18,7 +18,14 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 async-trait = "0.1"
 cdk = { version = "0.16", default-features = false, features = ["wallet"] }
 cdk-sqlite = "0.16"
-cdk-spilman = { git = "https://github.com/SatsAndSports/cashu_spilman_channels", branch = "main", optional = true }
+# cdk-spilman: pinned to validated rev (open->pay->close vs testnut, 194/194 WASM vectors).
+# Was floating `branch = "main"` — reproducibility risk. Do NOT bump without re-validating.
+# (A crates.io release exists, but it conflicts with the [patch.crates-io] cdk fork below;
+#  the git rev stays consistent with the patched cdk-sqlite/cdk-common.)
+cdk-spilman = { git = "https://github.com/SatsAndSports/cashu_spilman_channels", rev = "bafc38f220e46289bebf157014ab1129c7deac63", optional = true }
+# In-memory mock mint for CI tests (no external network). Same rev as cdk-spilman so cargo
+# unifies the cdk_spilman types (the crate has a path-dep on cdk-spilman inside the workspace).
+cdk-spilman-test-mint = { git = "https://github.com/SatsAndSports/cashu_spilman_channels", rev = "bafc38f220e46289bebf157014ab1129c7deac63", optional = true }
 cashu = { git = "https://github.com/cashubtc/cdk.git", rev = "63866dc6d7da9796c75365cde97157d464331da1", optional = true }
 tracing-appender = "0.2"
 serde = { version = "1", features = ["derive"] }
@@ -40,6 +47,7 @@ netlink = ["dep:rtnetlink", "dep:netlink-packet-route"]
 spilman = [
     "dep:cdk-spilman",
     "dep:cashu",
+    "dep:cdk-spilman-test-mint",
     "cdk-spilman/wallet",
     "cdk-spilman/configurable-host-reqwest",
 ]
