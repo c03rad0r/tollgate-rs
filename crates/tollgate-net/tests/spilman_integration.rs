@@ -10,17 +10,17 @@
 mod common;
 
 #[cfg(feature = "spilman")]
-#[allow(deprecated)]
 use {
     cashu::nuts::{Proof, SecretKey},
     cdk_spilman::{
         channel_parameters_get_channel_id, compute_channel_secret_from_hex,
-        compute_funding_token_amount, create_funding_outputs, create_signed_balance_update,
-        parse_keyset_info_from_json, verify_valid_channel, ChannelParameters,
+        compute_funding_token_amount, construct_proofs, create_funding_outputs,
+        create_signed_balance_update, parse_keyset_info_from_json, verify_valid_channel,
+        ChannelParameters,
     },
     common::TraceCollector,
     std::time::{SystemTime, UNIX_EPOCH},
-    tollgate_net::spilman_wallet::{fetch_active_keyset_info, SpilmanChannelManager},
+    tollgate_net::spilman_wallet::fetch_active_keyset_info,
 };
 
 #[cfg(feature = "spilman")]
@@ -45,6 +45,90 @@ fn hex_decode_32(s: &str) -> [u8; 32] {
         out[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).expect("valid hex");
     }
     out
+}
+
+/// Mint funding proofs for pre-computed deterministic funding outputs.
+///
+/// Ported from the removed `SpilmanChannelManager::mint_proofs_from_funding_outputs`
+/// so this ignored testnut integration test keeps compiling without the deprecated
+/// production struct. Creates a bolt11 quote, polls until the mint auto-pays, then
+/// mints blind signatures and constructs spendable proofs.
+#[cfg(feature = "spilman")]
+#[allow(clippy::too_many_lines)]
+async fn mint_funding_proofs(
+    client: &reqwest::Client,
+    mint_url: &str,
+    funding_outputs_json: &str,
+    keyset_info_json: &str,
+) -> Result<String, String> {
+    let outputs: serde_json::Value =
+        serde_json::from_str(funding_outputs_json).map_err(|e| format!("parse funding outputs: {e}"))?;
+    let funding_nominal = outputs["funding_token_nominal"]
+        .as_u64()
+        .ok_or("missing funding_token_nominal")?;
+    let blinded_messages = &outputs["blinded_messages"];
+    let secrets_with_blinding = outputs["secrets_with_blinding"].to_string();
+
+    let quote_body = serde_json::json!({ "amount": funding_nominal, "unit": "sat" }).to_string();
+    let resp = client
+        .post(format!("{mint_url}/v1/mint/quote/bolt11"))
+        .header("Content-Type", "application/json")
+        .body(quote_body)
+        .send()
+        .await
+        .map_err(|e| format!("POST /v1/mint/quote/bolt11: {e}"))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("read quote body: {e}"))?;
+    let quote: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("parse quote: {e}"))?;
+    let quote_id = quote["quote"].as_str().ok_or("missing quote id")?;
+
+    for i in 0..120u32 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let resp = client
+            .get(format!("{mint_url}/v1/mint/quote/bolt11/{quote_id}"))
+            .send()
+            .await
+            .map_err(|e| format!("poll quote: {e}"))?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| format!("read poll body: {e}"))?;
+        let status: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("parse poll: {e}"))?;
+        if status["state"].as_str() == Some("PAID") {
+            break;
+        }
+        if i == 119 {
+            return Err(format!("quote {quote_id} not paid after 60s"));
+        }
+    }
+
+    let mint_body =
+        serde_json::json!({ "quote": quote_id, "outputs": blinded_messages }).to_string();
+    let resp = client
+        .post(format!("{mint_url}/v1/mint/bolt11"))
+        .header("Content-Type", "application/json")
+        .body(mint_body)
+        .send()
+        .await
+        .map_err(|e| format!("POST /v1/mint/bolt11: {e}"))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("read mint body: {e}"))?;
+    let mint_result: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("parse mint: {e}"))?;
+
+    let signatures = mint_result["signatures"]
+        .as_array()
+        .ok_or("missing signatures in mint response")?;
+    let signatures_json =
+        serde_json::to_string(signatures).map_err(|e| format!("serialize signatures: {e}"))?;
+
+    construct_proofs(&signatures_json, &secrets_with_blinding, keyset_info_json)
 }
 
 #[cfg(feature = "spilman")]
@@ -237,11 +321,18 @@ async fn spilman_channel_lifecycle() {
         format!("requesting {funding_token_amount} sat for channel funding")
     );
     #[allow(deprecated)]
-    let mgr = SpilmanChannelManager::new(MINT_URL);
-    let proofs_json = mgr
-        .mint_proofs_from_funding_outputs(&funding_outputs_json, &keyset_info_json)
-        .await
-        .expect("mint funding proofs");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .expect("reqwest client");
+    let proofs_json = mint_funding_proofs(
+        &client,
+        MINT_URL,
+        &funding_outputs_json,
+        &keyset_info_json,
+    )
+    .await
+    .expect("mint funding proofs");
     trace_event!(
         "Mint",
         "Alice",
