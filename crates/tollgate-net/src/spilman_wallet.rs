@@ -1,69 +1,72 @@
 //! Spilman channel keyset utilities.
 //!
 //! Provides [`fetch_active_keyset_info`] for fetching the active sat keyset
-//! from a Cashu mint, used during channel setup.
-//!
-//! The legacy [`SpilmanChannelManager`] struct is deprecated — channel operations
-//! now use [`crate::spilman_service::SpilmanService`].
+//! from a Cashu mint, used during channel setup. The parsing logic is split
+//! into pure helpers ([`select_active_sat_keyset`], [`assemble_keyset_info`])
+//! so it can be unit-tested without network access.
 
 use std::time::Duration;
 
-use cdk_spilman::{construct_proofs, parse_keyset_info_from_json, KeysetInfo};
+use cdk_spilman::{parse_keyset_info_from_json, KeysetInfo};
 use serde_json::Value;
 
-/// Fetches the active sat keyset from the given mint URL.
+use crate::spilman_service::SpilmanError;
+
+/// Select the active `sat` keyset from a `/v1/keysets` response body.
 ///
-/// Returns both the raw keyset JSON string and the parsed `KeysetInfo`.
+/// Returns `(keyset_id, input_fee_ppk)`.
 ///
 /// # Errors
 ///
-/// Returns an error if the mint is unreachable, returns malformed JSON,
-/// or has no active sat keyset.
-pub async fn fetch_active_keyset_info(mint_url: &str) -> Result<(String, KeysetInfo), String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("reqwest client: {e}"))?;
+/// Returns [`SpilmanError::InvalidResponse`] if the body is not valid JSON or has
+/// no `keysets` array, and [`SpilmanError::Keyset`] if no active sat keyset is
+/// present or it is missing its id/fee fields.
+pub fn select_active_sat_keyset(keysets_body: &str) -> Result<(String, u64), SpilmanError> {
+    let body: Value = serde_json::from_str(keysets_body)?;
 
-    let resp = client
-        .get(format!("{mint_url}/v1/keysets"))
-        .send()
-        .await
-        .map_err(|e| format!("GET /v1/keysets: {e}"))?;
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| format!("read keysets body: {e}"))?;
-    let body: Value = serde_json::from_str(&text).map_err(|e| format!("parse keysets: {e}"))?;
-
-    let keysets = body["keysets"].as_array().ok_or("missing keysets array")?;
+    let keysets = body["keysets"]
+        .as_array()
+        .ok_or_else(|| SpilmanError::InvalidResponse("missing keysets array".to_string()))?;
 
     let active_sat = keysets
         .iter()
         .find(|ks| ks["unit"].as_str() == Some("sat") && ks["active"].as_bool() == Some(true))
-        .ok_or("no active sat keyset")?;
+        .ok_or_else(|| SpilmanError::Keyset("no active sat keyset".to_string()))?;
 
-    let keyset_id = active_sat["id"].as_str().ok_or("missing keyset id")?;
+    let keyset_id = active_sat["id"]
+        .as_str()
+        .ok_or_else(|| SpilmanError::Keyset("missing keyset id".to_string()))?
+        .to_owned();
+
     let input_fee_ppk = active_sat["input_fee_ppk"]
         .as_u64()
         .or_else(|| active_sat["inputFeePpk"].as_u64())
         .unwrap_or(0);
 
-    let resp = client
-        .get(format!("{mint_url}/v1/keys/{keyset_id}"))
-        .send()
-        .await
-        .map_err(|e| format!("GET /v1/keys: {e}"))?;
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| format!("read keys body: {e}"))?;
-    let keys_body: Value = serde_json::from_str(&text).map_err(|e| format!("parse keys: {e}"))?;
+    Ok((keyset_id, input_fee_ppk))
+}
 
-    let keyset_data = keys_body["keysets"]
+/// Assemble a `KeysetInfo` (and its JSON form) from a keyset id, its fee, and the
+/// `/v1/keys/{id}` response body.
+///
+/// # Errors
+///
+/// Returns [`SpilmanError::InvalidResponse`] if the keys body is malformed or has
+/// no keyset entry, or [`SpilmanError::Keyset`] if `cdk_spilman` rejects the
+/// assembled keyset info JSON.
+pub fn assemble_keyset_info(
+    keyset_id: &str,
+    input_fee_ppk: u64,
+    keys_body: &str,
+) -> Result<(String, KeysetInfo), SpilmanError> {
+    let keys_body_val: Value = serde_json::from_str(keys_body)?;
+
+    let keyset_data = keys_body_val["keysets"]
         .as_array()
         .and_then(|a| a.first())
-        .ok_or("missing keyset in keys response")?;
+        .ok_or_else(|| {
+            SpilmanError::InvalidResponse("missing keyset in keys response".to_string())
+        })?;
 
     let keyset_info_json = serde_json::json!({
         "keysetId": keyset_id,
@@ -73,147 +76,139 @@ pub async fn fetch_active_keyset_info(mint_url: &str) -> Result<(String, KeysetI
     })
     .to_string();
 
-    let keyset_info = parse_keyset_info_from_json(&keyset_info_json)?;
+    let keyset_info =
+        parse_keyset_info_from_json(&keyset_info_json).map_err(SpilmanError::from)?;
     Ok((keyset_info_json, keyset_info))
 }
 
-#[deprecated(
-    since = "0.2.0",
-    note = "Use fetch_active_keyset_info() or SpilmanService for channel ops."
-)]
-pub struct SpilmanChannelManager {
-    mint_url: String,
-    client: reqwest::Client,
+/// Fetch the active sat keyset from the given mint URL.
+///
+/// Returns both the raw keyset JSON string and the parsed [`KeysetInfo`].
+///
+/// # Errors
+///
+/// Returns [`SpilmanError::Network`] if the mint is unreachable,
+/// [`SpilmanError::MintStatus`] if it returns a non-success HTTP status, or a
+/// parse/keyset error if the response is malformed or has no active sat keyset.
+#[allow(clippy::missing_errors_doc)]
+pub async fn fetch_active_keyset_info(
+    mint_url: &str,
+) -> Result<(String, KeysetInfo), SpilmanError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()?;
+
+    // 1. /v1/keysets → pick the active sat keyset.
+    let resp = client.get(format!("{mint_url}/v1/keysets")).send().await?;
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(SpilmanError::MintStatus { status, body });
+    }
+    let keysets_body = resp.text().await?;
+    let (keyset_id, input_fee_ppk) = select_active_sat_keyset(&keysets_body)?;
+
+    // 2. /v1/keys/{id} → assemble KeysetInfo.
+    let resp = client
+        .get(format!("{mint_url}/v1/keys/{keyset_id}"))
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(SpilmanError::MintStatus { status, body });
+    }
+    let keys_body = resp.text().await?;
+
+    assemble_keyset_info(&keyset_id, input_fee_ppk, &keys_body)
 }
 
-#[allow(deprecated)]
-impl SpilmanChannelManager {
-    /// Creates a new Spilman channel manager targeting the given mint URL.
-    #[allow(clippy::missing_panics_doc)]
-    pub fn new(mint_url: &str) -> Self {
-        Self {
-            mint_url: mint_url.to_owned(),
-            client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(30))
-                .build()
-                .expect("reqwest client"),
-        }
+// ---------------------------------------------------------------------------
+// Unit tests (no network)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEYSETS_BODY: &str = r#"{
+        "keysets": [
+            {"id": "deadbeef", "unit": "msat", "active": true},
+            {"id": "00keysetid00", "unit": "sat", "active": true, "input_fee_ppk": 400},
+            {"id": "inactivekeyset", "unit": "sat", "active": false}
+        ]
+    }"#;
+
+    #[test]
+    fn select_active_sat_keyset_picks_the_active_sat_entry() {
+        let (id, fee) = select_active_sat_keyset(KEYSETS_BODY).expect("select keyset");
+        assert_eq!(id, "00keysetid00");
+        assert_eq!(fee, 400);
     }
 
-    pub fn mint_url(&self) -> &str {
-        &self.mint_url
+    #[test]
+    fn select_active_sat_keyset_reads_camel_case_fee() {
+        let body = r#"{"keysets":[{"id":"abc","unit":"sat","active":true,"inputFeePpk":50}]}"#;
+        let (_, fee) = select_active_sat_keyset(body).expect("select keyset");
+        assert_eq!(fee, 50);
     }
 
-    #[allow(clippy::missing_errors_doc)]
-    /// Fetches the active sat keyset from the mint.
-    ///
-    /// Delegates to [`fetch_active_keyset_info`].
-    pub async fn fetch_active_keyset_info(&self) -> Result<(String, KeysetInfo), String> {
-        fetch_active_keyset_info(&self.mint_url).await
+    #[test]
+    fn select_active_sat_keyset_defaults_fee_to_zero() {
+        let body = r#"{"keysets":[{"id":"abc","unit":"sat","active":true}]}"#;
+        let (_, fee) = select_active_sat_keyset(body).expect("select keyset");
+        assert_eq!(fee, 0);
     }
 
-    /// Mints funding proofs from the given deterministic blinded outputs.
-    ///
-    /// This creates a bolt11 quote, polls until paid (testnut auto-pays),
-    /// then mints blind signatures and constructs spendable proofs.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any HTTP request fails, the quote is not paid within
-    /// 60 seconds, the mint response is malformed, or proof construction fails.
-    pub async fn mint_proofs_from_funding_outputs(
-        &self,
-        funding_outputs_json: &str,
-        keyset_info_json: &str,
-    ) -> Result<String, String> {
-        let outputs: Value = serde_json::from_str(funding_outputs_json)
-            .map_err(|e| format!("parse funding outputs: {e}"))?;
+    #[test]
+    fn select_active_sat_keyset_errors_when_no_active_sat() {
+        let body = r#"{"keysets":[{"id":"x","unit":"sat","active":false}]}"#;
+        let err = select_active_sat_keyset(body).expect_err("should error");
+        assert!(matches!(err, SpilmanError::Keyset(_)), "{err:?}");
+    }
 
-        let funding_nominal = outputs["funding_token_nominal"]
-            .as_u64()
-            .ok_or("missing funding_token_nominal")?;
-        let blinded_messages = &outputs["blinded_messages"];
-        let secrets_with_blinding = outputs["secrets_with_blinding"].to_string();
+    #[test]
+    fn select_active_sat_keyset_errors_on_missing_array() {
+        let err = select_active_sat_keyset("{}").expect_err("should error");
+        assert!(matches!(err, SpilmanError::InvalidResponse(_)), "{err:?}");
+    }
 
-        let quote_body = serde_json::json!({
-            "amount": funding_nominal,
-            "unit": "sat"
-        })
-        .to_string();
+    #[test]
+    fn assemble_keyset_info_builds_json_and_parses() {
+        // Use a real pubkey + a keyset id derived from those keys so the JSON
+        // round-trips through cdk_spilman's parser (which validates pubkeys).
+        use std::collections::BTreeMap;
+        use std::str::FromStr;
 
-        let resp = self
-            .client
-            .post(format!("{}/v1/mint/quote/bolt11", self.mint_url))
-            .header("Content-Type", "application/json")
-            .body(quote_body)
-            .send()
-            .await
-            .map_err(|e| format!("POST /v1/mint/quote/bolt11: {e}"))?;
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| format!("read quote body: {e}"))?;
-        let quote: Value = serde_json::from_str(&text).map_err(|e| format!("parse quote: {e}"))?;
-        let quote_id = quote["quote"].as_str().ok_or("missing quote id")?;
+        use cashu::nuts::{Id, Keys, PublicKey};
 
-        tracing::info!("[Spilman] Mint quote {quote_id} created for {funding_nominal} sat");
+        let pk_hex = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+        let pk = PublicKey::from_str(pk_hex).expect("valid pubkey");
+        let mut keys_map = BTreeMap::new();
+        keys_map.insert(cashu::Amount::from(1), pk);
+        let id = Id::v1_from_keys(&Keys::new(keys_map));
+        let id_str = id.to_string();
 
-        for i in 0..120u32 {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            let resp = self
-                .client
-                .get(format!("{}/v1/mint/quote/bolt11/{quote_id}", self.mint_url))
-                .send()
-                .await
-                .map_err(|e| format!("poll quote: {e}"))?;
-            let text = resp
-                .text()
-                .await
-                .map_err(|e| format!("read poll body: {e}"))?;
-            let status: Value =
-                serde_json::from_str(&text).map_err(|e| format!("parse poll: {e}"))?;
-
-            if status["state"].as_str() == Some("PAID") {
-                tracing::info!("[Spilman] Quote {quote_id} PAID after {} polls", i + 1);
-                break;
-            }
-            if i == 119 {
-                return Err(format!("quote {quote_id} not paid after 60s"));
-            }
-        }
-
-        let mint_body = serde_json::json!({
-            "quote": quote_id,
-            "outputs": blinded_messages
-        })
-        .to_string();
-
-        let resp = self
-            .client
-            .post(format!("{}/v1/mint/bolt11", self.mint_url))
-            .header("Content-Type", "application/json")
-            .body(mint_body)
-            .send()
-            .await
-            .map_err(|e| format!("POST /v1/mint/bolt11: {e}"))?;
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| format!("read mint body: {e}"))?;
-        let mint_result: Value =
-            serde_json::from_str(&text).map_err(|e| format!("parse mint: {e}"))?;
-
-        let signatures = mint_result["signatures"]
-            .as_array()
-            .ok_or("missing signatures in mint response")?;
-        let signatures_json =
-            serde_json::to_string(signatures).map_err(|e| format!("serialize signatures: {e}"))?;
-
-        tracing::info!(
-            "[Spilman] Got {} blind signatures from mint",
-            signatures.len()
+        let keys_body = format!(
+            r#"{{"keysets":[{{"id":"{id_str}","unit":"sat","keys":{{"1":"{pk_hex}"}}}}]}}"#
         );
 
-        construct_proofs(&signatures_json, &secrets_with_blinding, keyset_info_json)
+        let (json, info) = assemble_keyset_info(&id_str, 400, &keys_body).expect("assemble keyset");
+        assert!(json.contains(&format!("\"keysetId\":\"{id_str}\"")));
+        assert!(json.contains("\"inputFeePpk\":400"));
+        assert_eq!(info.input_fee_ppk, 400);
+        assert_eq!(info.keyset_id, id);
+    }
+
+    #[test]
+    fn assemble_keyset_info_errors_on_malformed_keys_body() {
+        let err = assemble_keyset_info("x", 0, "not json").expect_err("should error");
+        assert!(matches!(err, SpilmanError::Serialization(_)), "{err:?}");
+    }
+
+    #[test]
+    fn assemble_keyset_info_errors_when_no_keyset_entry() {
+        let err = assemble_keyset_info("x", 0, r#"{"keysets":[]}"#).expect_err("should error");
+        assert!(matches!(err, SpilmanError::InvalidResponse(_)), "{err:?}");
     }
 }
