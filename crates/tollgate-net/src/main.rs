@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use tollgate_net::{cdk_wallet, client, mock, server, v1};
 
 #[cfg(feature = "spilman")]
-use {cashu::nuts::SecretKey, tollgate_net::spilman_service::SpilmanService};
+use {cashu::nuts::SecretKey, tollgate_net::spilman_service::SpilmanService, tollgate_net::SqliteChannelStorage};
 
 #[derive(Parser)]
 #[command(name = "tollgate-net", about = "TollGate v2 network node")]
@@ -115,6 +115,13 @@ enum Commands {
         /// Only used when --cli-socket is set.
         #[arg(long)]
         cli_config: Option<String>,
+        /// Path to SQLite session database (persists sessions across restarts).
+        /// Defaults to in-memory if not provided.
+        #[arg(long)]
+        session_db: Option<String>,
+        /// Path to SQLite channel database (persists channels across restarts, only for --wallet spilman).
+        #[arg(long)]
+        channel_db: Option<String>,
     },
     /// Run as a v1 client (pays upstream TollGate routers via TIP-03)
     V1Client {
@@ -272,15 +279,20 @@ async fn main() {
                         .expect("failed to create CDK wallet"),
                 );
                 let sender_secret = SecretKey::generate();
+                let storage = if let Some(ref db_path) = channel_db {
+                    SqliteChannelStorage::open(std::path::Path::new(db_path))
+                        .expect("failed to open channel DB")
+                } else {
+                    SqliteChannelStorage::open_in_memory()
+                        .expect("failed to create in-memory channel storage")
+                };
+                let host = cdk_spilman::ConfigurableClientHost::new(storage);
                 #[allow(clippy::arc_with_non_send_sync)]
-                let spilman = Arc::new(
-                    SpilmanService::with_persistence(
-                        &mint_url,
-                        sender_secret,
-                        channel_db.as_deref().map(std::path::Path::new),
-                    )
-                    .expect("failed to create Spilman service"),
-                );
+                let spilman = Arc::new(SpilmanService::from_host(
+                    &mint_url,
+                    sender_secret,
+                    host,
+                ));
                 let receiver_pk = receiver_pubkey.as_deref().unwrap_or_else(|| {
                     eprintln!("ERROR: --receiver-pubkey is required for --wallet spilman");
                     eprintln!(
@@ -317,6 +329,8 @@ async fn main() {
             monitor_interfaces,
             cli_socket,
             cli_config,
+            session_db,
+            channel_db: _,
         } => {
             use std::time::Duration;
             use v1::server::payout::{PayoutConfig, PayoutTarget};
@@ -472,6 +486,16 @@ async fn main() {
                     let wallet: Arc<dyn tollgate_core::wallet::Wallet> =
                         Arc::new(mock::MockWallet::new(0));
                     let merchant = Arc::new(v1::server::MerchantProvider::new(wallet));
+                    // Wire persistent session store if session DB path provided
+                    let server = if let Some(ref db_path) = session_db {
+                        let sess_store = Arc::new(
+                            v1::server::SqliteSessionStore::open(db_path)
+                                .expect("failed to open session DB"),
+                        );
+                        server.with_session_store(sess_store as Arc<dyn v1::server::SessionStore>)
+                    } else {
+                        server
+                    };
                     server.run(merchant, valve).await;
                 }
                 WalletType::Cdk => {
@@ -603,6 +627,18 @@ async fn main() {
                     );
                     let wallet_dyn: Arc<dyn tollgate_core::wallet::Wallet> = wallet;
                     let merchant = Arc::new(v1::server::MerchantProvider::new(wallet_dyn));
+
+                    // Wire persistent session store if session DB path provided
+                    let server = if let Some(ref db_path) = session_db {
+                        let sess_store = Arc::new(
+                            v1::server::SqliteSessionStore::open(db_path)
+                                .expect("failed to open session DB"),
+                        );
+                        server.with_session_store(sess_store as Arc<dyn v1::server::SessionStore>)
+                    } else {
+                        server
+                    };
+
                     server.run(merchant, valve).await;
                 }
             }

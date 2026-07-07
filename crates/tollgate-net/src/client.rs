@@ -15,6 +15,7 @@ use crate::mock::MockAdapter;
 #[cfg(feature = "spilman")]
 use {
     cdk_spilman::ClientStorage,
+    crate::spilman_channel_pair::{ChannelPair, IntervalMetering, NetSettlement},
     crate::spilman_service::{ReqwestNetworking, SpilmanService},
     cashu::mint_url::MintUrl,
     cashu::nuts::{CurrencyUnit, Proof as CashuProof, Token as CashuToken},
@@ -536,23 +537,34 @@ pub async fn run_spilman(
         tracing::error!("[spilman] Bootstrap token rejected");
         return;
     }
-    tracing::info!("[spilman] Bootstrap accepted. Opening Spilman channel...");
+    tracing::info!("[spilman] Bootstrap accepted. Opening Spilman channels...");
 
-    let mut channel_id = spilman_open_channel(&wallet, &spilman, receiver_pubkey_hex, mint_url).await;
-    let mut channel_capacity: u64 = spilman
-        .get_channel_info(&channel_id)
+    // Phase 5: Open bidirectional channel pair
+    let outbound_id = spilman_open_channel(&wallet, &spilman, receiver_pubkey_hex, mint_url).await;
+    let outbound_capacity: u64 = spilman
+        .get_channel_info(&outbound_id)
         .map(|info| info.capacity)
         .unwrap_or(1000);
 
+    // Inbound channel (remote → us) — requires remote to open; for now unused.
+    let _inbound_id: Option<String> = None;
+
+    let mut pair = ChannelPair::new(1, 1); // equal prices for demo/test
+    pair.set_outbound_channel(&outbound_id);
+
     let mut elapsed_ms: u64 = 0;
     let mut delivered: u64 = 0;
+    let mut received: u64 = 0;
     let mut current_balance: u64 = 0;
+    let mut channel_id = outbound_id;
+    let mut channel_capacity = outbound_capacity;
     let payment_per_interval: u64 = 10;
 
     for i in 1..=intervals {
         tokio::time::sleep(Duration::from_secs(interval_secs)).await;
         elapsed_ms += interval_secs * 1000;
         delivered += 1000;
+        received += 500; // simulate half-duplex traffic
         current_balance += payment_per_interval;
 
         // Phase 2: Rollover — if channel is >80% exhausted, open a new one
@@ -560,31 +572,50 @@ pub async fn run_spilman(
             tracing::info!(
                 "[spilman] Channel {channel_id} at {current_balance}/{channel_capacity} — rolling over to new channel"
             );
-            // Open new channel (funds from wallet)
             channel_id = spilman_open_channel(&wallet, &spilman, receiver_pubkey_hex, mint_url).await;
             channel_capacity = spilman
                 .get_channel_info(&channel_id)
                 .map(|info| info.capacity)
                 .unwrap_or(1000);
-            current_balance = 0; // new channel starts at 0
+            current_balance = 0;
+            pair.set_outbound_channel(&channel_id);
             tracing::info!(
                 "[spilman] Rolled over to new channel {channel_id} capacity={channel_capacity}"
             );
         }
 
-        spilman_send_payment(
-            &http,
-            peer_url,
-            &mut session,
-            &spilman,
-            &channel_id,
-            i,
-            current_balance,
-            elapsed_ms,
-            delivered,
-            payment_per_interval,
-        )
-        .await;
+        // Phase 5: Compute net settlement — only net debtor pays
+        let metering = IntervalMetering::new(delivered, received);
+        let settlement = pair.settle_interval(metering).unwrap_or(NetSettlement::LocalOwes(current_balance));
+
+        match settlement {
+            NetSettlement::LocalOwes(amount) => {
+                // We are the net debtor — send payment on outbound channel
+                current_balance = current_balance.max(amount);
+                spilman_send_payment(
+                    &http,
+                    peer_url,
+                    &mut session,
+                    &spilman,
+                    &channel_id,
+                    i,
+                    current_balance,
+                    elapsed_ms,
+                    delivered,
+                    payment_per_interval,
+                )
+                .await;
+            }
+            NetSettlement::RemoteOwes(amount) => {
+                // Remote is net debtor — we expect them to send payment via inbound channel
+                tracing::info!(
+                    "[spilman] Interval {i}: remote owes {amount} — waiting for inbound payment"
+                );
+            }
+            NetSettlement::Even => {
+                tracing::info!("[spilman] Interval {i}: Even — no payment this interval");
+            }
+        }
     }
 
     if no_close {
