@@ -15,8 +15,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use cashu::nuts::{Proof as CashuProof, SecretKey};
 use cdk_spilman::{
-    ConfigurableClientHost, KeysetInfo, MemoryClientStorage, SpilmanClientAsyncNetworking,
-    SpilmanClientBridge, SpilmanClientNetworking,
+    ClientStorage, ConfigurableClientHost, KeysetInfo, MemoryClientStorage,
+    SpilmanClientAsyncNetworking, SpilmanClientBridge, SpilmanClientNetworking,
 };
 use thiserror::Error;
 
@@ -219,20 +219,41 @@ impl SpilmanClientNetworking for DummySyncNetworking {
     }
 }
 
-type ClientBridge =
-    SpilmanClientBridge<ConfigurableClientHost<MemoryClientStorage>, DummySyncNetworking>;
-
-// ---------------------------------------------------------------------------
+/// SpilmanClientBridge parameterized by storage backend.
+///
+/// Defaults to in-memory storage. Use [`SpilmanService::with_persistence`] for
+/// SQLite-backed durable storage.
+type ClientBridge<S> = SpilmanClientBridge<ConfigurableClientHost<S>, DummySyncNetworking>;
 // SpilmanService
 // ---------------------------------------------------------------------------
 
-pub struct SpilmanService {
-    client_bridge: ClientBridge,
+pub struct SpilmanService<S: ClientStorage + 'static = MemoryClientStorage> {
+    client_bridge: ClientBridge<S>,
     mint_url: String,
     sender_pubkey_hex: String,
 }
 
-impl SpilmanService {
+impl<S: ClientStorage + 'static> SpilmanService<S> {
+    /// Create a new SpilmanService with the given host and storage.
+    #[must_use]
+    pub fn from_host(mint_url: &str, sender_secret: SecretKey, host: ConfigurableClientHost<S>) -> Self {
+        let sender_pubkey_hex = sender_secret.public_key().to_hex();
+        let mut host = host;
+        host.add_key(sender_secret);
+        let client_bridge = SpilmanClientBridge::new(host, DummySyncNetworking);
+        Self {
+            client_bridge,
+            mint_url: mint_url.to_owned(),
+            sender_pubkey_hex,
+        }
+    }
+}
+
+impl SpilmanService<MemoryClientStorage> {
+    /// Create a new SpilmanService with in-memory channel storage.
+    ///
+    /// Channels and payment state are held in memory only and will be lost
+    /// on process restart. For durable storage, use [`SpilmanService::with_persistence`].
     #[must_use]
     pub fn new(mint_url: &str, sender_secret: SecretKey) -> Self {
         let sender_pubkey_hex = sender_secret.public_key().to_hex();
@@ -245,6 +266,45 @@ impl SpilmanService {
             sender_pubkey_hex,
         }
     }
+}
+
+impl SpilmanService<crate::spilman_persistence::SqliteChannelStorage> {
+    /// Create a new SpilmanService with SQLite-backed durable channel storage.
+    ///
+    /// When `db_path` is `Some(path)`, channels are persisted to a SQLite database
+    /// at the given path, surviving process restarts. When `None`, an in-memory
+    /// SQLite database is used (useful for testing or when persistence is not needed
+    /// but the same storage type is required).
+    ///
+    /// On startup, the in-memory cache is repopulated from the database (crash recovery).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::spilman_persistence::StorageError`] if the database
+    /// cannot be opened or created.
+    pub fn with_persistence(
+        mint_url: &str,
+        sender_secret: SecretKey,
+        db_path: Option<&std::path::Path>,
+    ) -> Result<Self, crate::spilman_persistence::StorageError> {
+        let storage = if let Some(path) = db_path {
+            crate::spilman_persistence::SqliteChannelStorage::open(path)?
+        } else {
+            crate::spilman_persistence::SqliteChannelStorage::open_in_memory()?
+        };
+        let sender_pubkey_hex = sender_secret.public_key().to_hex();
+        let mut host = ConfigurableClientHost::new(storage);
+        host.add_key(sender_secret);
+        let client_bridge = SpilmanClientBridge::new(host, DummySyncNetworking);
+        Ok(Self {
+            client_bridge,
+            mint_url: mint_url.to_owned(),
+            sender_pubkey_hex,
+        })
+    }
+}
+
+impl<S: ClientStorage + 'static> SpilmanService<S> {
 
     #[must_use]
     pub fn mint_url(&self) -> &str {

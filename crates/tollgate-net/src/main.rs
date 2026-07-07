@@ -34,6 +34,9 @@ enum Commands {
         /// Mint URL (only used with --wallet cdk)
         #[arg(long, default_value = "https://testnut.cashu.exchange")]
         mint_url: String,
+        /// Path to SQLite channel database (persists channels across restarts, only for --wallet spilman)
+        #[arg(long)]
+        channel_db: Option<String>,
     },
     /// Run as a client (buys network access)
     Client {
@@ -58,6 +61,9 @@ enum Commands {
         /// Skip cooperative close and disconnect (for unilateral close testing)
         #[arg(long, default_value = "false")]
         no_close: bool,
+        /// Path to SQLite channel database (persists channels across restarts, only for --wallet spilman)
+        #[arg(long)]
+        channel_db: Option<String>,
     },
     /// Run as a v1 server (accepts Cashu token payments for network access)
     V1Server {
@@ -209,6 +215,7 @@ async fn main() {
             port,
             wallet: wt,
             mint_url,
+            channel_db,
         } => match wt {
             WalletType::Mock => {
                 let wallet = Arc::new(mock::MockWallet::new(0));
@@ -230,6 +237,7 @@ async fn main() {
                         .expect("failed to create CDK wallet"),
                 );
                 let receiver_secret = SecretKey::generate();
+                let _ = &channel_db; // provider-side persistence not yet wired
                 server::run_spilman(port, wallet, receiver_secret, &mint_url).await;
             }
         },
@@ -241,6 +249,7 @@ async fn main() {
             mint_url,
             receiver_pubkey,
             no_close,
+            channel_db,
         } => match wt {
             WalletType::Mock => {
                 let _ = (&receiver_pubkey, &no_close);
@@ -264,7 +273,14 @@ async fn main() {
                 );
                 let sender_secret = SecretKey::generate();
                 #[allow(clippy::arc_with_non_send_sync)]
-                let spilman = Arc::new(SpilmanService::new(&mint_url, sender_secret));
+                let spilman = Arc::new(
+                    SpilmanService::with_persistence(
+                        &mint_url,
+                        sender_secret,
+                        channel_db.as_deref().map(std::path::Path::new),
+                    )
+                    .expect("failed to create Spilman service"),
+                );
                 let receiver_pk = receiver_pubkey.as_deref().unwrap_or_else(|| {
                     eprintln!("ERROR: --receiver-pubkey is required for --wallet spilman");
                     eprintln!(

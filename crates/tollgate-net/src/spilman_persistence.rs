@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 
-use cdk_spilman::client_storage::{
+use cdk_spilman::{
     ClientChannelFunding, ClientChannelState, ClientPaymentState, ClientStorage,
 };
 use rusqlite::{params, Connection};

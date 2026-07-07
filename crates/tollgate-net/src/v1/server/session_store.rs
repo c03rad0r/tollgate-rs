@@ -16,6 +16,7 @@ use super::CustomerSession;
 #[derive(Debug, thiserror::Error)]
 pub enum SessionStoreError {
     #[error("sqlite error: {0}")]
+    #[cfg(feature = "sqlite")]
     Sqlite(#[from] rusqlite::Error),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
@@ -94,10 +95,12 @@ impl SessionStore for InMemorySessionStore {
     }
 }
 
+#[cfg(feature = "sqlite")]
 pub struct SqliteSessionStore {
     conn: Mutex<rusqlite::Connection>,
 }
 
+#[cfg(feature = "sqlite")]
 impl SqliteSessionStore {
     const CREATE_TABLE_SQL: &str = "\
         CREATE TABLE IF NOT EXISTS sessions (\
@@ -141,6 +144,7 @@ impl SqliteSessionStore {
     }
 }
 
+#[cfg(feature = "sqlite")]
 #[async_trait]
 impl SessionStore for SqliteSessionStore {
     async fn get(&self, mac: &str) -> Result<Option<CustomerSession>, SessionStoreError> {
@@ -220,6 +224,7 @@ impl SessionStore for SqliteSessionStore {
     }
 }
 
+#[cfg(feature = "sqlite")]
 #[cfg(test)]
 mod tests {
     use super::*;

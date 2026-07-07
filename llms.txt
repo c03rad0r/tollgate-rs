@@ -1,0 +1,30 @@
+# tollgate-rs
+
+> Rust implementation of the [TollGate](https://github.com/OpenTollGate)
+
+Language: Rust
+Repository: https://github.com/OpenTollGate/tollgate-rs.git
+Local path: /home/c03rad0r/repos/tollgate-rs
+
+## Quick Links
+- [README.md](README.md)
+- [LICENSE](LICENSE)
+- [Cargo.toml](Cargo.toml)
+
+## File Structure
+- crates/
+- docs/
+- testing/
+- .dockerignore
+- Cargo.lock
+- Cargo.toml
+- LICENSE
+- README.md
+- llms.txt
+- rust-toolchain.toml
+- rustfmt.toml
+
+## Notes for AI Assistants
+This is the **tollgate-rs** project written in Rust.
+Purpose: Rust implementation of the [TollGate](https://github.com/OpenTollGate)
+Read README.md for full documentation. Key configuration and entry points are listed in Quick Links above.

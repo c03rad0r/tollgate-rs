@@ -32,7 +32,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 nostr = "0.44"
 thiserror = "2"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
 tokio-stream = "0.1"
 futures = "0.3"
 ipnetwork = "0.20"
@@ -41,14 +41,15 @@ rtnetlink = { version = "0.21", optional = true }
 netlink-packet-route = { version = "0.30", optional = true }
 
 [features]
-default = []
+default = ["sqlite"]
 nds = []
 netlink = ["dep:rtnetlink", "dep:netlink-packet-route"]
+sqlite = ["dep:rusqlite"]
 spilman = [
     "dep:cdk-spilman",
     "dep:cashu",
     "dep:cdk-spilman-test-mint",
-    "dep:rusqlite",
+    "sqlite",
     "cdk-spilman/wallet",
     "cdk-spilman/configurable-host-reqwest",
 ]

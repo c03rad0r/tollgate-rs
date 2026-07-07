@@ -14,6 +14,7 @@ use crate::mock::MockAdapter;
 
 #[cfg(feature = "spilman")]
 use {
+    cdk_spilman::ClientStorage,
     crate::spilman_service::{ReqwestNetworking, SpilmanService},
     cashu::mint_url::MintUrl,
     cashu::nuts::{CurrencyUnit, Proof as CashuProof, Token as CashuToken},
@@ -330,7 +331,7 @@ pub async fn run_cdk<W: Wallet + 'static>(
 #[cfg(feature = "spilman")]
 async fn spilman_open_channel(
     wallet: &crate::cdk_wallet::CdkWallet,
-    spilman: &SpilmanService,
+    spilman: &SpilmanService<impl ClientStorage + 'static>,
     receiver_pubkey_hex: &str,
     mint_url: &str,
 ) -> String {
@@ -386,7 +387,7 @@ async fn spilman_send_payment(
     http: &reqwest::Client,
     peer_url: &str,
     session: &mut PeerSession<crate::cdk_wallet::CdkWallet, MockAdapter>,
-    spilman: &SpilmanService,
+    spilman: &SpilmanService<impl ClientStorage + 'static>,
     channel_id: &str,
     interval_index: u32,
     current_balance: u64,
@@ -475,7 +476,7 @@ pub async fn run_spilman(
     intervals: u32,
     interval_secs: u64,
     wallet: Arc<crate::cdk_wallet::CdkWallet>,
-    spilman: Arc<SpilmanService>,
+    spilman: Arc<SpilmanService<impl ClientStorage + 'static>>,
     receiver_pubkey_hex: &str,
     mint_url: &str,
     no_close: bool,
