@@ -5,6 +5,9 @@ pub mod server;
 pub mod v1;
 
 #[cfg(feature = "spilman")]
+pub mod spilman_channel_pair;
+
+#[cfg(feature = "spilman")]
 pub mod spilman_service;
 
 #[cfg(feature = "spilman")]

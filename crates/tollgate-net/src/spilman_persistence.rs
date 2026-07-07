@@ -18,6 +18,10 @@ use cdk_spilman::{
 };
 use rusqlite::{params, Connection};
 
+/// Current schema version for the channel storage database.
+/// Increment when adding migrations in [`migrate`].
+const SCHEMA_VERSION: i64 = 1;
+
 /// Error type for storage operations.
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
@@ -25,6 +29,8 @@ pub enum StorageError {
     Sqlite(#[from] rusqlite::Error),
     #[error("Database lock poisoned")]
     LockPoisoned,
+    #[error("Migration error: {0}")]
+    Migration(String),
 }
 
 /// SQLite-backed channel storage with write-through in-memory cache.
@@ -79,6 +85,32 @@ impl SqliteChannelStorage {
     }
 
     fn init_schema(conn: &Connection) -> Result<(), StorageError> {
+        // Create schema version table first (used by migrations).
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS _schema_version (
+                version INTEGER NOT NULL
+            );
+            "#,
+        )?;
+
+        // Ensure exactly one row in _schema_version.
+        let current: i64 = conn
+            .query_row("SELECT COALESCE((SELECT version FROM _schema_version LIMIT 1), 0)", [], |row| row.get(0))
+            .unwrap_or(0);
+
+        if current == 0 {
+            conn.execute("INSERT INTO _schema_version (version) VALUES (?1)", params![SCHEMA_VERSION])?;
+        } else if current > SCHEMA_VERSION {
+            return Err(StorageError::Migration(format!(
+                "database schema version {current} is newer than supported {SCHEMA_VERSION}"
+            )));
+        } else if current < SCHEMA_VERSION {
+            Self::migrate(conn, current, SCHEMA_VERSION)?;
+            conn.execute("UPDATE _schema_version SET version = ?1", params![SCHEMA_VERSION])?;
+        }
+
+        // Create core tables (idempotent — IF NOT EXISTS).
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS channel_funding (
@@ -107,6 +139,40 @@ impl SqliteChannelStorage {
             "#,
         )?;
         Ok(())
+    }
+
+    /// Apply schema migrations from `from_version` to `to_version`.
+    fn migrate(_conn: &Connection, _from_version: i64, _to_version: i64) -> Result<(), StorageError> {
+        // Schema starts at v1 — no migrations yet.
+        // When adding migrations:
+        //   1. Increment SCHEMA_VERSION.
+        //   2. Add a migration step here:
+        //      if from_version < 2 {
+        //          conn.execute_batch("ALTER TABLE ... ADD COLUMN ...")?;
+        //      }
+        tracing::info!(
+            "Schema at version {_from_version}, target {_to_version} — no migrations needed"
+        );
+        Ok(())
+    }
+
+    /// Check schema health. Returns an error if the DB is at a version this
+    /// binary doesn't understand.
+    pub fn check_schema(conn: &Connection) -> Result<i64, StorageError> {
+        let current: i64 = conn
+            .query_row("SELECT version FROM _schema_version", [], |row| row.get(0))
+            .map_err(|e| StorageError::Migration(format!("cannot read schema version: {e}")))?;
+        if current > SCHEMA_VERSION {
+            return Err(StorageError::Migration(format!(
+                "database schema version {current} is newer than supported {SCHEMA_VERSION}"
+            )));
+        }
+        if current < SCHEMA_VERSION {
+            return Err(StorageError::Migration(format!(
+                "database schema version {current} is behind supported {SCHEMA_VERSION}"
+            )));
+        }
+        Ok(current)
     }
 
     fn load_from_sqlite(&mut self) -> Result<(), StorageError> {
@@ -402,5 +468,112 @@ mod tests {
         storage.set_closed("ch_3");
         assert_eq!(storage.open_channel_count(), 3);
         assert_eq!(storage.get_state("ch_1"), ClientChannelState::Closed);
+    }
+
+    #[test]
+    fn test_schema_version_on_open() {
+        // Verify that opening a fresh database sets schema version to SCHEMA_VERSION.
+        let storage = SqliteChannelStorage::open_in_memory().unwrap();
+        let conn = storage.conn.lock().unwrap();
+        let version: i64 = conn
+            .query_row("SELECT version FROM _schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn test_schema_version_persists_across_reopen() {
+        let dir = std::env::temp_dir();
+        let db_path = dir.join("tollgate_test_schema_ver.db");
+        let _ = std::fs::remove_file(&db_path);
+        {
+            let _storage = SqliteChannelStorage::open(&db_path).unwrap();
+        }
+        {
+            let _storage = SqliteChannelStorage::open(&db_path).unwrap();
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            let version: i64 = conn
+                .query_row("SELECT version FROM _schema_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, SCHEMA_VERSION);
+        }
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_check_schema_rejects_unknown_future_version() {
+        let dir = std::env::temp_dir();
+        let db_path = dir.join("tollgate_test_future.db");
+        let _ = std::fs::remove_file(&db_path);
+        {
+            let _storage = SqliteChannelStorage::open(&db_path).unwrap();
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute("UPDATE _schema_version SET version = ?1", params![9999])
+                .unwrap();
+        }
+        {
+            let err = SqliteChannelStorage::open(&db_path).unwrap_err();
+            assert!(
+                matches!(err, StorageError::Migration(_)),
+                "expected Migration error, got {err:?}"
+            );
+        }
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_spilman_service_with_persistence() {
+        use cashu::nuts::SecretKey;
+        use crate::spilman_service::SpilmanService;
+
+        let dir = std::env::temp_dir();
+        let db_path = dir.join("tollgate_test_spilman_svc.db");
+        let _ = std::fs::remove_file(&db_path);
+
+        let secret = SecretKey::generate();
+        let svc = SpilmanService::with_persistence(
+            "http://127.0.0.1:1",
+            secret.clone(),
+            Some(&db_path),
+        )
+        .expect("with_persistence should succeed");
+
+        assert_eq!(svc.mint_url(), "http://127.0.0.1:1");
+        assert_eq!(
+            svc.sender_pubkey(),
+            &secret.public_key().to_hex()
+        );
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_persistence_with_roundtrip_channels() {
+        let dir = std::env::temp_dir();
+        let db_path = dir.join("tollgate_test_roundtrip.db");
+        let _ = std::fs::remove_file(&db_path);
+
+        let mut storage = SqliteChannelStorage::open(&db_path).unwrap();
+        for i in 0..3 {
+            let id = format!("rt_{i}");
+            storage.save_funding(&id, make_test_funding(&id));
+            storage.save_payment_state(&id, make_test_payment(i as u64 * 100));
+        }
+        assert_eq!(storage.list_channel_ids().len(), 3);
+        assert_eq!(storage.open_channel_count(), 3);
+
+        storage.set_closed("rt_1");
+        assert_eq!(storage.open_channel_count(), 2);
+
+        drop(storage);
+        let storage = SqliteChannelStorage::open(&db_path).unwrap();
+        assert_eq!(storage.list_channel_ids().len(), 3);
+        assert_eq!(storage.open_channel_count(), 2);
+        assert_eq!(storage.get_state("rt_1"), ClientChannelState::Closed);
+        assert_eq!(storage.get_state("rt_0"), ClientChannelState::Open);
+        assert_eq!(storage.get_funding("rt_2").unwrap().capacity, 1000);
+        assert_eq!(storage.get_payment_state("rt_2").unwrap().balance, 200);
+
+        let _ = std::fs::remove_file(&db_path);
     }
 }

@@ -538,7 +538,11 @@ pub async fn run_spilman(
     }
     tracing::info!("[spilman] Bootstrap accepted. Opening Spilman channel...");
 
-    let channel_id = spilman_open_channel(&wallet, &spilman, receiver_pubkey_hex, mint_url).await;
+    let mut channel_id = spilman_open_channel(&wallet, &spilman, receiver_pubkey_hex, mint_url).await;
+    let mut channel_capacity: u64 = spilman
+        .get_channel_info(&channel_id)
+        .map(|info| info.capacity)
+        .unwrap_or(1000);
 
     let mut elapsed_ms: u64 = 0;
     let mut delivered: u64 = 0;
@@ -550,6 +554,24 @@ pub async fn run_spilman(
         elapsed_ms += interval_secs * 1000;
         delivered += 1000;
         current_balance += payment_per_interval;
+
+        // Phase 2: Rollover — if channel is >80% exhausted, open a new one
+        if current_balance > channel_capacity * 80 / 100 {
+            tracing::info!(
+                "[spilman] Channel {channel_id} at {current_balance}/{channel_capacity} — rolling over to new channel"
+            );
+            // Open new channel (funds from wallet)
+            channel_id = spilman_open_channel(&wallet, &spilman, receiver_pubkey_hex, mint_url).await;
+            channel_capacity = spilman
+                .get_channel_info(&channel_id)
+                .map(|info| info.capacity)
+                .unwrap_or(1000);
+            current_balance = 0; // new channel starts at 0
+            tracing::info!(
+                "[spilman] Rolled over to new channel {channel_id} capacity={channel_capacity}"
+            );
+        }
+
         spilman_send_payment(
             &http,
             peer_url,
