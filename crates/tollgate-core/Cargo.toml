@@ -11,14 +11,5 @@ authors.workspace = true
 [dependencies]
 tollgate-protocol = { workspace = true }
 
-# Spilman payment channel (optional, requires std + crypto)
-ed25519-dalek = { version = "2", optional = true, features = ["rand_core"] }
-rand = { version = "0.8", optional = true }
-
-[features]
-default = []
-std = []
-spilman = ["dep:ed25519-dalek", "dep:rand", "std"]
-
 [lints]
 workspace = true
