@@ -18,7 +18,7 @@
 //! (`tollgate-net`), not here: core only emits the *intent*
 //! (e.g. [`Action::VerifyBootstrapToken`]) and reacts to the result. This keeps
 //! core deterministic and trivially testable — no executor, no mocks, no clock.
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
 
@@ -38,3 +38,6 @@ pub use peer::PeerId;
 pub use pricing::{Price, Product};
 pub use session::{PeerPhase, PeerSnapshot, Session};
 pub use time::Millis;
+
+#[cfg(feature = "spilman")]
+pub mod spilman;
